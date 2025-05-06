@@ -4,22 +4,20 @@ from os.path import join, dirname
 import sys
 from datetime import datetime
 from collections import deque
-import ssl
 import asyncio
 from email.message import EmailMessage
+import base64
 
-import aiosmtpd
+
+from aiosmtplib import SMTP
 import requests
 import dotenv
-
-dotenv_path = join(dirname(__file__), '.env')
-dotenv.load_dotenv(dotenv_path)
 
 class MailClient:
     _instance = None
     _initialized = False
 
-    def __new__(cls):
+    def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super(MailClient, cls).__new__(cls)
         return cls._instance
@@ -36,14 +34,8 @@ class MailClient:
 
     async def connect(self):
         if not self._connected:
-            self._client = aiosmtpd.SMTP(hostname=self.server, port=self.port)
-
-            # Start TLS if not on a secure port
-            if self.port != 465:
-                await self._client.starttls(
-                    validate_certs=True, ssl_context=ssl.create_default_context()
-                )
-
+            self._client = SMTP(hostname=self.server, port=self.port,use_tls=True)
+            await self._client.connect()
             await self._client.login(self.account, self.password)
             self._connected = True
 
@@ -61,11 +53,20 @@ class MailClient:
         await self.connect()
         return self
 
-    async def send(self,recipient: str ,subject: str,content: str,content_type: str = "plain",) -> bool:
+    async def __aexit__(self, exception_type, exception_value, traceback):
+        return self
+
+    async def send(
+        self,
+        recipient: str,
+        subject: str,
+        content: str,
+        content_type: str = "plain",
+    ) -> bool:
         if not self._connected:
             await self.connect()
 
-        email =  EmailMessage()
+        email = EmailMessage()
         email["From"] = self.account
         email["To"] = recipient
         email["Subject"] = subject
@@ -109,6 +110,8 @@ class Message:
         id, ts, content = full_json["id"], full_json["timestamp"], full_json["content"]
         return cls(id=id, ts=cls.parse_date_from_json(ts), content=content)
 
+dotenv_path = join(dirname(__file__), ".env")
+dotenv.load_dotenv(dotenv_path)
 # watched_channels = []
 # for key, value in os.environ.items():
 #     if key.startswith("WATCHED_CHANNEL_"):
@@ -120,11 +123,18 @@ user_agent = os.getenv("USER_AGENT")
 smtp_serv = os.getenv("SMTP_SERVER")
 smtp_port = int(os.getenv("SMTP_PORT"))
 smtp_account = os.getenv("SMTP_ACCOUNT")
-smtp_pass = os.getenv("SMTP_PASSWROD")
+smtp_pass = base64.b64decode(os.getenv("SMTP_PASSWROD")).decode("ascii")
+smtp_dest =  os.getenv("SMTP_DEST")
 
 CHANEL_PATH = f"/api/v9/channels/{chann_id}/messages?limit=50"
+
+
 async def main():
-    mail_client =  MailClient()
+    mail_client = MailClient(
+        server=smtp_serv, port=smtp_port, account=smtp_account, password=smtp_pass
+    )
+    async with mail_client as mail:
+        await mail.send(smtp_dest,"test","test")
     headers = {"User-Agent": user_agent, "Authorization": token}
     url = f"https://discord.com{CHANEL_PATH}"
     response = requests.get(url, headers=headers)
@@ -159,6 +169,7 @@ async def main():
         print(f"Request failed with status code: {response.status_code}")
         print(response.text)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
