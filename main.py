@@ -7,6 +7,7 @@ from collections import deque
 import asyncio
 from email.message import EmailMessage
 import base64
+import logging
 
 
 from aiosmtplib import SMTP
@@ -54,6 +55,7 @@ class MailClient:
         return self
 
     async def __aexit__(self, exception_type, exception_value, traceback):
+        await self.disconnect()
         return self
 
     async def send(
@@ -76,13 +78,29 @@ class MailClient:
 
 
 class Message:
-    def __init__(self, id: str, ts: datetime, content: str):
+    def __init__(self, id: str, ts: datetime, content: str, channel_id:str):
+        """
+        Initialize a new message instance.
+
+        Args:
+            id (str): The unique identifier of the message.
+            ts (datetime): The timestamp when the message was created.
+            content (str): The content of the message.
+            channel_id (str): The identifier of the channel where the message belongs.
+
+        Properties:
+            id (str): The unique identifier of the message.
+            ts (datetime): The timestamp when the message was created.
+            content (str): The content of the message.
+            channel_id (str): The identifier of the channel where the message belongs.
+        """
         self.id = id
         self.ts = ts
         self.content = content
+        self.channel_id = channel_id
 
     def to_CSV_line(self) -> str:
-        return f"{self.parse_date_to_csv(self.ts)},{self.id},{self.content}\n"
+        return f"{self.parse_date_to_csv(self.ts)},{self.id},{self.content},{self.channel_id}\n"
 
     @staticmethod
     def parse_date_from_csv(str_date) -> datetime:
@@ -98,17 +116,20 @@ class Message:
 
     @classmethod
     def from_CSV_line(cls, csv_line: str) -> Message:
-        data: tuple[str, str, str] = tuple(csv_line.split(","))
+        data: tuple[str, str, str,str] = tuple(csv_line.split(","))
         return cls(
             ts=cls.parse_date_from_csv(data[0]),
             id=data[1],
             content=data[2],
+            chann_id=data[3]
         )
 
     @classmethod
     def from_full_json(cls, full_json: dict[str, str]) -> Message:
-        id, ts, content = full_json["id"], full_json["timestamp"], full_json["content"]
-        return cls(id=id, ts=cls.parse_date_from_json(ts), content=content)
+        id, ts, content,chann_id = full_json["id"], full_json["timestamp"], full_json["content"], full_json["channel_id"]
+        return cls(id=id, ts=cls.parse_date_from_json(ts), content=content, channel_id=chann_id)
+
+logger = logging.getLogger()
 
 dotenv_path = join(dirname(__file__), ".env")
 dotenv.load_dotenv(dotenv_path)
@@ -118,8 +139,10 @@ dotenv.load_dotenv(dotenv_path)
 #         watched_channels.append(value)
 
 chann_id = os.getenv("WATCHED_CHANNEL_JOB_GENERAL")
+base_url =  os.getenv("BASE_URL")
 token = os.getenv("TOKEN")
 user_agent = os.getenv("USER_AGENT")
+
 smtp_serv = os.getenv("SMTP_SERVER")
 smtp_port = int(os.getenv("SMTP_PORT"))
 smtp_account = os.getenv("SMTP_ACCOUNT")
@@ -135,16 +158,15 @@ async def main():
     )
     async with mail_client as mail:
         await mail.send(smtp_dest,"test","test")
-    headers = {"User-Agent": user_agent, "Authorization": token}
-    url = f"https://discord.com{CHANEL_PATH}"
-    response = requests.get(url, headers=headers)
+    url = f"{base_url}{CHANEL_PATH}"
+    response = requests.get(url, headers={"User-Agent": user_agent, "Authorization": token})
 
     if response.status_code == 200:
         data = response.json()
         new_last_message = Message.from_full_json(data[0]) if data else None
 
         if not new_last_message:
-            print("No messages found in the request.")
+            logger.info("No messages found in the request.")
             sys.exit(0)
 
         last_line = None
@@ -162,12 +184,11 @@ async def main():
             if last_line:
                 last_file_message = Message.from_CSV_line(last_line)
                 if last_file_message.id == new_last_message.id:
-                    print("No new messages")
+                    logger.info("No new messages")
                     sys.exit(0)
             file.write(new_last_message.to_CSV_line())
     else:
-        print(f"Request failed with status code: {response.status_code}")
-        print(response.text)
+        logger.error(f"Request failed with status code: {response.status_code}. Msg : {response.text}")
         sys.exit(1)
 
 
